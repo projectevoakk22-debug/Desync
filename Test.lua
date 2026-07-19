@@ -1,9 +1,9 @@
 --[[
-    DESYNC HUB v2 — Fixed
-    Draggable GUI + Working Fake Lag
+    DESYNC HUB v3 — Fully Fixed
+    - Others see you frozen (ghost position)
     - You move freely on your screen
-    - Other players see you frozen
-    - Turn OFF → you teleport to your real position for everyone
+    - Turn OFF → you appear at your real position for everyone
+    - Camera follows you correctly
 ]]
 
 local Players = game:GetService("Players")
@@ -20,14 +20,15 @@ local ghostCFrame = nil
 local realCFrame = nil
 local steppedConn = nil
 local heartbeatConn = nil
-local renderConn = nil
 local debounce = false
 
 -- ===== HELPER =====
 local function getHRP()
     local char = LocalPlayer.Character
     if not char then return nil end
-    return char:FindFirstChild("HumanoidRootPart")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    return hrp
 end
 
 -- ===== GUI =====
@@ -182,46 +183,42 @@ local function enableDesync()
     local hrp = getHRP()
     if not hrp then return end
 
-    -- Capture current position as both ghost and real
+    -- Capture current position
     ghostCFrame = hrp.CFrame
     realCFrame = hrp.CFrame
 
     -- STEPPED: fires BEFORE physics
-    -- Restore to real position so physics moves us from real position
+    -- Set HRP to ghost position so server replicates frozen position
+    -- Network update happens during/after physics, so server sees ghost
     steppedConn = RunService.Stepped:Connect(function()
         local h = getHRP()
         if not h then return end
-        if realCFrame then
-            h.CFrame = realCFrame
-        end
-    end)
-
-    -- HEARTBEAT: fires AFTER physics
-    -- Save where we moved to (real), then set to ghost for server replication
-    heartbeatConn = RunService.Heartbeat:Connect(function()
-        local h = getHRP()
-        if not h then return end
-        -- Save real position (where physics moved us)
-        realCFrame = h.CFrame
-        -- Set to ghost position so server replicates frozen position
         if ghostCFrame then
             h.CFrame = ghostCFrame
         end
     end)
 
-    -- RENDERSTEPPED: fires before rendering
-    -- Restore to real so WE see ourselves moving
-    renderConn = RunService.RenderStepped:Connect(function()
+    -- HEARTBEAT: fires AFTER physics
+    -- Physics moved us from ghost, calculate movement delta
+    -- Apply delta to real position (accumulate movement)
+    -- Restore HRP to real position for local rendering
+    heartbeatConn = RunService.Heartbeat:Connect(function()
         local h = getHRP()
         if not h then return end
-        if realCFrame then
-            h.CFrame = realCFrame
-        end
+
+        -- Calculate how much physics moved us FROM ghost
+        local movementDelta = ghostCFrame:Inverse() * h.CFrame
+
+        -- Apply same movement to real position
+        realCFrame = realCFrame * movementDelta
+
+        -- Restore HRP to real position so we see ourselves moving
+        h.CFrame = realCFrame
     end)
 end
 
 local function disableDesync()
-    -- Disconnect all connections
+    -- Disconnect connections
     if steppedConn then
         steppedConn:Disconnect()
         steppedConn = nil
@@ -230,13 +227,9 @@ local function disableDesync()
         heartbeatConn:Disconnect()
         heartbeatConn = nil
     end
-    if renderConn then
-        renderConn:Disconnect()
-        renderConn = nil
-    end
 
     -- Teleport to real position (where we actually moved)
-    -- Server will replicate this, everyone sees us at our real location
+    -- Server will replicate this, everyone sees us at real location
     local h = getHRP()
     if h and realCFrame then
         h.CFrame = realCFrame
@@ -250,21 +243,19 @@ end
 toggleBtn.MouseButton1Click:Connect(function()
     if debounce then return end
     debounce = true
-    task.wait(0.1)
+    task.wait(0.05)
     debounce = false
 
     fakeLagEnabled = not fakeLagEnabled
 
     if fakeLagEnabled then
         enableDesync()
-        -- Update GUI immediately
         toggleBtn.Text = "FAKE LAG: ON"
         toggleBtn.BackgroundColor3 = Color3.fromRGB(100, 60, 200)
         statusDot.BackgroundColor3 = Color3.fromRGB(120, 80, 220)
         mainStroke.Transparency = 0.1
     else
         disableDesync()
-        -- Update GUI immediately
         toggleBtn.Text = "FAKE LAG: OFF"
         toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
         statusDot.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
@@ -275,15 +266,31 @@ end)
 -- ===== RESPAWN HANDLER =====
 LocalPlayer.CharacterAdded:Connect(function()
     if fakeLagEnabled then
-        -- Re-enable after respawn
+        if steppedConn then steppedConn:Disconnect(); steppedConn = nil end
+        if heartbeatConn then heartbeatConn:Disconnect(); heartbeatConn = nil end
         task.wait(1.5)
         local h = getHRP()
         if h then
             ghostCFrame = h.CFrame
             realCFrame = h.CFrame
+
+            steppedConn = RunService.Stepped:Connect(function()
+                local hrp = getHRP()
+                if not hrp then return end
+                if ghostCFrame then
+                    hrp.CFrame = ghostCFrame
+                end
+            end)
+
+            heartbeatConn = RunService.Heartbeat:Connect(function()
+                local hrp = getHRP()
+                if not hrp then return end
+                local delta = ghostCFrame:Inverse() * hrp.CFrame
+                realCFrame = realCFrame * delta
+                hrp.CFrame = realCFrame
+            end)
         end
     end
 end)
 
--- Notification
-print("[DESYNC HUB] Loaded successfully. Press the button to toggle fake lag.")
+print("[DESYNC HUB v3] Loaded. Toggle button to enable/disable fake lag.")
